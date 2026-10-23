@@ -1,0 +1,12 @@
+# Secrets — ne JAMAIS committer
+.env
+*.env
+!.env.exemple
+
+# Dépendances / build (régénérés)
+node_modules/
+dist/
+
+# Divers
+.DS_Store
+*.log

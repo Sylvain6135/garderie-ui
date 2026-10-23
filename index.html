@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Garderie École d'Hesloup</title>
+
+    <!-- PWA : permet d'installer l'application sur l'écran d'accueil -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#22304A" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Garderie" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <!-- Tailwind via CDN : simple pour ce projet, évite une étape de build CSS.
+         Pour une version plus optimisée, on pourra installer Tailwind en local. -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!--
+      Adresse du back-end (API).
+      * En production derrière le reverse proxy, laissez "/api".
+      * Pour tester en direct sur le NAS avant le proxy, remplacez par
+        l'adresse complète, ex. : "http://192.168.1.50:3000/api"
+    -->
+    <script>
+      window.__API_BASE__ = "/api";
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+    <!-- PWA : enregistrement du service worker (rend l'app installable) -->
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/service-worker.js").catch((err) => {
+            console.warn("Service worker non enregistré :", err);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>
