@@ -210,14 +210,14 @@ const api = {
     return apiFetch("/admin/logo", { method: "PUT", body: JSON.stringify({ logo }) });
   },
 
-  // Dates de trimestre configurables (réservé admin pour l'écriture)
+  // Dates des périodes configurables (réservé admin pour l'écriture)
   async lireTrimestres() {
-    return apiFetch("/admin/trimestres"); // { fin_t1, fin_t2, fin_t3 }
+    return apiFetch("/admin/trimestres"); // { fin_t1, fin_t2, fin_t3, fin_t4 }
   },
-  async enregistrerTrimestres(fin_t1, fin_t2, fin_t3) {
+  async enregistrerTrimestres(fin_t1, fin_t2, fin_t3, fin_t4) {
     return apiFetch("/admin/trimestres", {
       method: "PUT",
-      body: JSON.stringify({ fin_t1, fin_t2, fin_t3 }),
+      body: JSON.stringify({ fin_t1, fin_t2, fin_t3, fin_t4 }),
     });
   },
   async recalculerTrimestres() {
@@ -371,12 +371,13 @@ const initCreneaux = [
 /* ---------- Trimestres scolaires ---------- */
 // Bornes indicatives des trimestres scolaires français
 const TRIMESTRES = [
-  { id: "t1", label: "1er trimestre", periode: "sept. – déc.", debutMois: 9, finMois: 12 },
-  { id: "t2", label: "2e trimestre", periode: "janv. – mars", debutMois: 1, finMois: 3 },
-  { id: "t3", label: "3e trimestre", periode: "avr. – juil.", debutMois: 4, finMois: 7 },
+  { id: "t1", label: "1re période", periode: "sept. – nov.", debutMois: 9, finMois: 11 },
+  { id: "t2", label: "2e période", periode: "déc. – févr.", debutMois: 12, finMois: 2 },
+  { id: "t3", label: "3e période", periode: "mars – avr.", debutMois: 3, finMois: 4 },
+  { id: "t4", label: "4e période", periode: "mai – juil.", debutMois: 5, finMois: 7 },
 ];
 
-// Libellé de période d'un trimestre, calculé depuis les dates configurées
+// Libellé de période, calculé depuis les dates configurées
 // (ex. "1 sept. – 30 nov."). Retombe sur le libellé figé si pas de dates.
 const fmtDateCourte = (iso) => {
   if (!iso) return "";
@@ -386,7 +387,7 @@ const fmtDateCourte = (iso) => {
 const periodeTrimestre = (id, dates) => {
   const fige = (TRIMESTRES.find((t) => t.id === id) || {}).periode || "";
   if (!dates || !dates.fin_t1 || !dates.fin_t2 || !dates.fin_t3) return fige;
-  // Début de chaque trimestre = lendemain de la fin du précédent.
+  // Début de chaque période = lendemain de la fin de la précédente.
   const lendemain = (iso) => {
     const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + 1);
     return d.toISOString().slice(0, 10);
@@ -394,13 +395,19 @@ const periodeTrimestre = (id, dates) => {
   if (id === "t1") return `jusqu'au ${fmtDateCourte(dates.fin_t1)}`;
   if (id === "t2") return `${fmtDateCourte(lendemain(dates.fin_t1))} – ${fmtDateCourte(dates.fin_t2)}`;
   if (id === "t3") return `${fmtDateCourte(lendemain(dates.fin_t2))} – ${fmtDateCourte(dates.fin_t3)}`;
+  if (id === "t4") {
+    // La 4e période va du lendemain de fin_t3 jusqu'à fin_t4 (fin d'année).
+    if (dates.fin_t4) return `${fmtDateCourte(lendemain(dates.fin_t3))} – ${fmtDateCourte(dates.fin_t4)}`;
+    return `à partir du ${fmtDateCourte(lendemain(dates.fin_t3))}`;
+  }
   return fige;
 };
 const trimestreCourant = () => {
   const m = new Date().getMonth() + 1;
-  if (m >= 9 && m <= 12) return "t1";
-  if (m >= 1 && m <= 3) return "t2";
-  return "t3";
+  if (m >= 9 && m <= 11) return "t1";
+  if (m === 12 || m <= 2) return "t2";
+  if (m >= 3 && m <= 4) return "t3";
+  return "t4";
 };
 
 // Année scolaire au format "2025-2026" (bascule en septembre).
@@ -699,7 +706,7 @@ export default function GarderieApp() {
   });
   const [confirmation, setConfirmation] = useState(null);   // { message, action } — demande de confirmation avant suppression
   // Dates de trimestre configurables
-  const [datesTrimestres, setDatesTrimestres] = useState({ fin_t1: "", fin_t2: "", fin_t3: "" });
+  const [datesTrimestres, setDatesTrimestres] = useState({ fin_t1: "", fin_t2: "", fin_t3: "", fin_t4: "" });
   const [trimestreMessage, setTrimestreMessage] = useState("");
   const [recalculEnCours, setRecalculEnCours] = useState(false);
 
@@ -1393,9 +1400,9 @@ ${sectionReports}
             mentions: c.org_mentions || "",
           });
         }
-        // Charger les dates de trimestre configurées.
+        // Charger les dates des périodes configurées.
         const t = await api.lireTrimestres().catch(() => null);
-        if (t) setDatesTrimestres({ fin_t1: t.fin_t1 || "", fin_t2: t.fin_t2 || "", fin_t3: t.fin_t3 || "" });
+        if (t) setDatesTrimestres({ fin_t1: t.fin_t1 || "", fin_t2: t.fin_t2 || "", fin_t3: t.fin_t3 || "", fin_t4: t.fin_t4 || "" });
       }
     } catch (e) {
       setErreurAdmin(e.message || "Impossible de charger les créneaux.");
@@ -1421,21 +1428,21 @@ ${sectionReports}
     }
   };
 
-  // Enregistrer les dates de trimestre (réservé admin).
+  // Enregistrer les dates des périodes (réservé admin).
   const enregistrerDatesTrimestres = async () => {
     setTrimestreMessage("");
-    const { fin_t1, fin_t2, fin_t3 } = datesTrimestres;
-    if (!fin_t1 || !fin_t2 || !fin_t3) {
-      setTrimestreMessage("Veuillez renseigner les trois dates de fin de trimestre.");
+    const { fin_t1, fin_t2, fin_t3, fin_t4 } = datesTrimestres;
+    if (!fin_t1 || !fin_t2 || !fin_t3 || !fin_t4) {
+      setTrimestreMessage("Veuillez renseigner les quatre dates de fin de période.");
       return;
     }
-    if (!(fin_t1 < fin_t2 && fin_t2 < fin_t3)) {
-      setTrimestreMessage("Les dates doivent se suivre : fin du 1er < fin du 2e < fin du 3e.");
+    if (!(fin_t1 < fin_t2 && fin_t2 < fin_t3 && fin_t3 < fin_t4)) {
+      setTrimestreMessage("Les dates doivent se suivre : fin de la 1re < 2e < 3e < 4e.");
       return;
     }
     try {
-      await api.enregistrerTrimestres(fin_t1, fin_t2, fin_t3);
-      setTrimestreMessage("Dates de trimestre enregistrées.");
+      await api.enregistrerTrimestres(fin_t1, fin_t2, fin_t3, fin_t4);
+      setTrimestreMessage("Dates des périodes enregistrées.");
       setTimeout(() => setTrimestreMessage(""), 3000);
     } catch (e) {
       setTrimestreMessage(e.message || "Enregistrement impossible.");
@@ -3031,14 +3038,16 @@ ${sectionReports}
               </div>
             </div>
 
-            {/* Dates des trimestres */}
+            {/* Dates des périodes */}
             <div className="rounded-2xl border p-4" style={{ backgroundColor: C.card, borderColor: C.line }}>
               <h2 className="font-bold mb-1 flex items-center gap-2">
-                <CalendarDays size={17} style={{ color: C.yellow }} /> Dates des trimestres
+                <CalendarDays size={17} style={{ color: C.yellow }} /> Dates des périodes
               </h2>
               <p className="text-xs mb-3" style={{ color: C.grey }}>
-                Indiquez la date de <strong>fin</strong> de chaque trimestre. Le trimestre suivant commence
-                le lendemain. Chaque pointage est rattaché au trimestre correspondant à sa date.
+                La facturation est répartie sur <strong>4 périodes</strong> pour alléger la charge des
+                familles. Indiquez la date de <strong>fin</strong> de chaque période (la 4e correspond à la
+                fin de l'année scolaire). La période suivante commence le lendemain, et chaque pointage est
+                rattaché à la période correspondant à sa date.
               </p>
               {trimestreMessage && (
                 <p className="text-sm mb-3 font-semibold"
@@ -3048,21 +3057,27 @@ ${sectionReports}
               )}
               <div className="flex flex-wrap gap-4">
                 <label className="text-sm">
-                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin du 1er trimestre</span>
+                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin de la 1re période</span>
                   <input type="date" value={datesTrimestres.fin_t1}
                     onChange={(ev) => setDatesTrimestres({ ...datesTrimestres, fin_t1: ev.target.value })}
                     className="rounded-xl border px-3 py-2 outline-none" style={{ borderColor: C.line }} />
                 </label>
                 <label className="text-sm">
-                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin du 2e trimestre</span>
+                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin de la 2e période</span>
                   <input type="date" value={datesTrimestres.fin_t2}
                     onChange={(ev) => setDatesTrimestres({ ...datesTrimestres, fin_t2: ev.target.value })}
                     className="rounded-xl border px-3 py-2 outline-none" style={{ borderColor: C.line }} />
                 </label>
                 <label className="text-sm">
-                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin du 3e trimestre</span>
+                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin de la 3e période</span>
                   <input type="date" value={datesTrimestres.fin_t3}
                     onChange={(ev) => setDatesTrimestres({ ...datesTrimestres, fin_t3: ev.target.value })}
+                    className="rounded-xl border px-3 py-2 outline-none" style={{ borderColor: C.line }} />
+                </label>
+                <label className="text-sm">
+                  <span className="block text-xs mb-1" style={{ color: C.grey }}>Fin de la 4e période (fin d'année)</span>
+                  <input type="date" value={datesTrimestres.fin_t4}
+                    onChange={(ev) => setDatesTrimestres({ ...datesTrimestres, fin_t4: ev.target.value })}
                     className="rounded-xl border px-3 py-2 outline-none" style={{ borderColor: C.line }} />
                 </label>
               </div>
@@ -3075,13 +3090,13 @@ ${sectionReports}
                 <button onClick={lancerRecalculTrimestres} disabled={recalculEnCours}
                   className="flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-semibold border"
                   style={{ borderColor: C.yellow, color: "#A87E12", backgroundColor: "#FDF6E3", opacity: recalculEnCours ? 0.6 : 1 }}>
-                  <History size={15} /> {recalculEnCours ? "Recalcul en cours…" : "Recalculer les trimestres"}
+                  <History size={15} /> {recalculEnCours ? "Recalcul en cours…" : "Recalculer les périodes"}
                 </button>
               </div>
               <p className="text-xs mt-3" style={{ color: C.grey }}>
                 Après avoir changé les dates, lancez le recalcul pour réattribuer les pointages déjà
-                enregistrés au bon trimestre. Faites une sauvegarde au préalable. Le recalcul ne modifie
-                ni les montants ni les heures, seulement le trimestre de rattachement.
+                enregistrés à la bonne période. Faites une sauvegarde au préalable. Le recalcul ne modifie
+                ni les montants ni les heures, seulement la période de rattachement.
               </p>
             </div>
 
