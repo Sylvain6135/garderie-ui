@@ -156,6 +156,10 @@ const api = {
   async factureFamille(familleId, trimestre, annee) {
     return apiFetch(`/facturation/famille?famille_id=${familleId}&trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
   },
+  // Toutes les factures familles facturables (impression groupée)
+  async facturesFamillesFacturables(trimestre, annee) {
+    return apiFetch(`/facturation/factures-familles?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
+  },
   // Report de facturation (seuil 15 €)
   async recapAvecReport(trimestre, annee) {
     return apiFetch(`/facturation/avec-report?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
@@ -991,6 +995,44 @@ export default function GarderieApp() {
     }).join("");
   };
 
+  // Variante CONDENSÉE : regroupe les passages par type de créneau.
+  // Une ligne par créneau (nb de passages + total), et en dessous une liste
+  // compacte des dates concernées. Évite les factures de plusieurs pages.
+  const lignesPassagesParCreneau = (passages, esc, fmtJourCourt) => {
+    // Regrouper par créneau (nom + horaires, qui sont constants par créneau).
+    const parCreneau = {};
+    const ordre = [];
+    for (const p of passages) {
+      const horaires = (p.heure_debut && p.heure_fin)
+        ? `${p.heure_debut.replace(":", "h")}–${p.heure_fin.replace(":", "h")}`
+        : "";
+      const cle = `${p.creneau}|${horaires}`;
+      if (!parCreneau[cle]) {
+        parCreneau[cle] = { nom: p.creneau, horaires, nb: 0, total: 0, jours: [] };
+        ordre.push(cle);
+      }
+      const g = parCreneau[cle];
+      g.nb += 1;
+      g.total += Number(p.cout_eur);
+      if (p.jour) g.jours.push(p.jour);
+    }
+    return ordre.map((cle) => {
+      const g = parCreneau[cle];
+      const total = g.total.toFixed(2).replace(".", ",");
+      const horairesTxt = g.horaires ? ` <span style="color:#8A94A6">(${g.horaires})</span>` : "";
+      const sPass = g.nb > 1 ? "passages" : "passage";
+      // Liste compacte des dates (triées), format court JJ/MM.
+      const datesTxt = g.jours
+        .slice()
+        .sort()
+        .map((j) => fmtJourCourt(j))
+        .join(", ");
+      return `<tr class="creneau-resume"><td>${esc(g.nom)}${horairesTxt} <span style="color:#555">— ${g.nb} ${sPass}</span>`
+        + (datesTxt ? `<div class="dates">${datesTxt}</div>` : "")
+        + `</td><td>${total} €</td></tr>`;
+    }).join("");
+  };
+
   const exporterFacture = async (enfantId) => {
     const tri = TRIMESTRES.find((t) => t.id === trimestre);
     const cf = coordFacturation;
@@ -1058,13 +1100,91 @@ ${cf.mentions ? `<p class="mentions">${nl2br(cf.mentions)}</p>` : ""}
     }
   };
 
-  const exporterFactureFamille = async (familleId) => {
-    const tri = TRIMESTRES.find((t) => t.id === trimestre);
+  // Styles communs aux factures famille (impression individuelle ou groupée).
+  // Police et espacement réduits pour tenir sur peu de pages.
+  const stylesFacture = `
+body{font-family:Arial,sans-serif;max-width:680px;margin:28px auto;color:#22304A;font-size:12px}
+h1{border-bottom:3px solid #F5B82E;padding-bottom:6px;font-size:21px;margin:0 0 10px}
+.emetteur{font-size:11px;line-height:1.45;margin-bottom:14px}
+.emetteur .nom{font-weight:bold;font-size:13px}
+.destinataire{font-size:12px;line-height:1.5;margin:0 0 6px}
+.destinataire .enfants{color:#555}
+table{width:100%;border-collapse:collapse;margin-top:12px}
+td,th{border:1px solid #ddd;padding:5px 8px;text-align:left;vertical-align:top}
+th{font-size:11px;background:#f3f5f4}
+tr.enfant td{background:#F7F6F2;font-size:12px}
+tr.creneau-resume td{font-size:11.5px}
+tr.creneau-resume .dates{color:#8A94A6;font-size:10px;margin-top:2px;line-height:1.35}
+tr.total td{font-weight:bold;background:#FBF3DC;font-size:13px}
+.statut{display:inline-block;margin-top:10px;padding:3px 10px;border-radius:6px;font-weight:bold;font-size:12px;background:#eee}
+.mentions{color:#8A94A6;font-size:10.5px;margin-top:10px}
+.facture{page-break-after:always}
+.facture:last-child{page-break-after:auto}
+@media print{.noprint{display:none}}
+`;
+
+  // Construit le CORPS HTML d'une facture famille (sans squelette <html>),
+  // réutilisable pour l'impression individuelle et l'impression groupée.
+  // `avecBoutonRien` : pas de bouton ici, c'est le conteneur qui le pose.
+  const corpsFactureFamille = (d) => {
     const cf = coordFacturation;
     const esc = (t) => (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const nl2br = (t) => esc(t).replace(/\n/g, "<br>");
     const bloc = (label, val) => (val ? `<br><strong>${label} :</strong> ${esc(val)}` : "");
 
+    const tri = TRIMESTRES.find((t) => t.id === trimestre);
+    const total = Number(d.total_eur).toFixed(2).replace(".", ",");
+    const periode = `${tri.label} (${periodeTrimestre(tri.id, datesTrimestres)}) — ${d.annee_scolaire}`;
+    const fmtJourCourt = (j) => {
+      const dt = new Date(j);
+      return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}`;
+    };
+    const libelleStatut = { paye: "Payé", attente: "En attente", relance: "À relancer" }[d.statut_paiement] || d.statut_paiement;
+
+    // Liste des prénoms des enfants, pour l'en-tête (parent + enfants).
+    const nomsEnfants = (d.enfants || []).map((e) => esc(e.enfant)).join(", ");
+
+    // Ligne de report éventuelle (seuil 15 €).
+    const reportEntrant = Number(d.report_entrant_eur || 0);
+    let ligneReport = "";
+    if (reportEntrant > 0) {
+      const triOrigine = TRIMESTRES.find((t) => t.id === d.report_trimestre_origine);
+      const nomOrigine = triOrigine ? `${triOrigine.label} (${periodeTrimestre(triOrigine.id, datesTrimestres)})` : "trimestre précédent";
+      ligneReport = `<tr class="enfant"><td><strong>Report du ${nomOrigine}</strong><br><span style="font-size:10px;color:#8A94A6">Montant inférieur au seuil de facturation, reporté sur ce trimestre</span></td><td>${reportEntrant.toFixed(2).replace(".", ",")} €</td></tr>`;
+    }
+
+    const blocsEnfants = (d.enfants || []).map((enf) => {
+      let detail = "";
+      if (enf.formule === "forfait") {
+        detail = `<tr class="creneau-resume"><td>Forfait trimestriel — accès illimité</td><td>${Number(enf.montant_eur).toFixed(2).replace(".", ",")} €</td></tr>`;
+      } else if (enf.passages && enf.passages.length > 0) {
+        // Détail CONDENSÉ : une ligne par créneau + dates.
+        detail = lignesPassagesParCreneau(enf.passages, esc, fmtJourCourt);
+      }
+      return `<tr class="enfant"><td colspan="2"><strong>${esc(enf.enfant)}</strong>${enf.classe ? ` (${esc(enf.classe)})` : ""} — ${enf.formule === "forfait" ? "Forfait" : "À la carte"} · sous-total ${Number(enf.montant_eur).toFixed(2).replace(".", ",")} €</td></tr>${detail}`;
+    }).join("");
+
+    return `<div class="facture">
+${logo ? `<img src="${logo}" alt="Logo" style="max-height:60px;max-width:200px;object-fit:contain;margin-bottom:8px">` : ""}
+<h1>${esc(cf.organisme) || "Facture"} — Facture de famille</h1>
+<div class="emetteur">
+<span class="nom">${esc(cf.organisme)}</span><br>
+${nl2br(cf.adresse)}${bloc("Tél", cf.telephone)}${bloc("E-mail", cf.email)}${bloc("SIRET", cf.siret)}${bloc("IBAN", cf.iban)}
+</div>
+<p class="destinataire"><strong>Famille :</strong> ${esc(d.famille.nom_referent)}${bloc("Tél", d.famille.telephone)}${bloc("E-mail", d.famille.email)}<br>
+<strong>Enfant${(d.enfants || []).length > 1 ? "s" : ""} :</strong> <span class="enfants">${nomsEnfants || "—"}</span><br>
+<strong>Période :</strong> ${periode}</p>
+<table><thead><tr><th>Prestation</th><th style="width:90px">Montant</th></tr></thead>
+<tbody>${blocsEnfants || '<tr><td colspan="2">Aucune facturation ce trimestre</td></tr>'}${ligneReport}
+<tr class="total"><td>Total à régler pour la famille</td><td>${total} €</td></tr></tbody></table>
+<div class="statut">Statut : ${libelleStatut}</div>
+${cf.mentions ? `<p class="mentions">${nl2br(cf.mentions)}</p>` : ""}
+<p class="mentions">Facture générée le ${new Date().toLocaleDateString("fr-FR")}.</p>
+</div>`;
+  };
+
+  const exporterFactureFamille = async (familleId) => {
+    const esc = (t) => (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     let d;
     try {
       d = await api.factureFamille(familleId, trimestre, anneeScolaireCourante());
@@ -1073,63 +1193,54 @@ ${cf.mentions ? `<p class="mentions">${nl2br(cf.mentions)}</p>` : ""}
       return;
     }
 
-    const total = Number(d.total_eur).toFixed(2).replace(".", ",");
-    const periode = `${tri.label} (${periodeTrimestre(tri.id, datesTrimestres)}) — ${d.annee_scolaire}`;
-    const fmtJour = (j) => new Date(j).toLocaleDateString("fr-FR");
-    const libelleStatut = { paye: "Payé", attente: "En attente", relance: "À relancer" }[d.statut_paiement] || d.statut_paiement;
-
-    // Ligne de report éventuelle (report des trimestres précédents, seuil 15 €).
-    const reportEntrant = Number(d.report_entrant_eur || 0);
-    let ligneReport = "";
-    if (reportEntrant > 0) {
-      const triOrigine = TRIMESTRES.find((t) => t.id === d.report_trimestre_origine);
-      const nomOrigine = triOrigine ? `${triOrigine.label} (${periodeTrimestre(triOrigine.id, datesTrimestres)})` : "trimestre précédent";
-      ligneReport = `<tr class="enfant"><td><strong>Report du ${nomOrigine}</strong><br><span style="font-size:12px;color:#8A94A6">Montant inférieur au seuil de facturation, reporté sur ce trimestre</span></td><td>${reportEntrant.toFixed(2).replace(".", ",")} €</td></tr>`;
-    }
-
-    const blocsEnfants = d.enfants.map((enf) => {
-      let detail = "";
-      if (enf.formule === "forfait") {
-        detail = `<tr><td>Forfait trimestriel — accès illimité</td><td>${Number(enf.montant_eur).toFixed(2).replace(".", ",")} €</td></tr>`;
-      } else if (enf.passages.length > 0) {
-        detail = lignesPassagesParJour(enf.passages, esc, fmtJour);
-      }
-      return `<tr class="enfant"><td colspan="2"><strong>${esc(enf.enfant)}</strong>${enf.classe ? ` (${esc(enf.classe)})` : ""} — ${enf.formule === "forfait" ? "Forfait" : "À la carte"} · sous-total ${Number(enf.montant_eur).toFixed(2).replace(".", ",")} €</td></tr>${detail}`;
-    }).join("");
-
     const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Facture — ${esc(d.famille.nom_referent)}</title>
-<style>body{font-family:Arial,sans-serif;max-width:640px;margin:40px auto;color:#22304A}
-h1{border-bottom:3px solid #F5B82E;padding-bottom:8px}
-.emetteur{font-size:13px;line-height:1.5;margin-bottom:24px}
-.emetteur .nom{font-weight:bold;font-size:15px}
-table{width:100%;border-collapse:collapse;margin-top:24px}
-td,th{border:1px solid #ddd;padding:10px;text-align:left}
-tr.enfant td{background:#F7F6F2;font-size:14px}
-tfoot td{font-weight:bold;background:#FBF3DC;font-size:15px}
-.statut{display:inline-block;margin-top:12px;padding:4px 12px;border-radius:6px;font-weight:bold;font-size:13px;background:#eee}
-.mentions{color:#8A94A6;font-size:12px;margin-top:16px}
-@media print{.noprint{display:none}}</style></head><body>
-${logo ? `<img src="${logo}" alt="Logo" style="max-height:70px;max-width:220px;object-fit:contain;margin-bottom:12px">` : ""}
-<h1>${esc(cf.organisme) || "Facture"} — Facture de famille</h1>
-<div class="emetteur">
-<span class="nom">${esc(cf.organisme)}</span><br>
-${nl2br(cf.adresse)}${bloc("Tél", cf.telephone)}${bloc("E-mail", cf.email)}${bloc("SIRET", cf.siret)}${bloc("IBAN", cf.iban)}
-</div>
-<p><strong>Famille :</strong> ${esc(d.famille.nom_referent)}${bloc("Tél", d.famille.telephone)}${bloc("E-mail", d.famille.email)}<br>
-<strong>Période :</strong> ${periode}<br>
-<strong>Enfants facturés :</strong> ${d.enfants.length}</p>
-<table><thead><tr><th>Prestation</th><th>Montant</th></tr></thead>
-<tbody>${blocsEnfants || '<tr><td colspan="2">Aucune facturation ce trimestre</td></tr>'}${ligneReport}</tbody>
-<tfoot><tr><td>Total à régler pour la famille</td><td>${total} €</td></tr></tfoot></table>
-<div class="statut">Statut : ${libelleStatut}</div>
-${cf.mentions ? `<p class="mentions">${nl2br(cf.mentions)}</p>` : ""}
-<p class="mentions">Facture générée le ${new Date().toLocaleDateString("fr-FR")}.</p>
+<style>${stylesFacture}</style></head><body>
+${corpsFactureFamille(d)}
 <p class="noprint"><button onclick="window.print()" style="padding:10px 18px;background:#22304A;color:#fff;border:none;border-radius:8px;font-weight:bold;cursor:pointer">Imprimer / Enregistrer en PDF</button></p>
 </body></html>`;
 
     const fenetre = window.open("", "_blank");
     if (fenetre) { fenetre.document.write(html); fenetre.document.close(); }
     else setErreurFacturation("Autorisez les fenêtres surgissantes pour imprimer la facture.");
+  };
+
+  // Impression GROUPÉE : toutes les factures familles facturables du trimestre,
+  // une par page, dans un seul document prêt à imprimer d'un trait.
+  const [impressionGroupeeEnCours, setImpressionGroupeeEnCours] = useState(false);
+  const imprimerToutesFacturesFamilles = async () => {
+    const esc = (t) => (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const tri = TRIMESTRES.find((t) => t.id === trimestre);
+    setImpressionGroupeeEnCours(true);
+    setErreurFacturation("");
+    let data;
+    try {
+      data = await api.facturesFamillesFacturables(trimestre, anneeScolaireCourante());
+    } catch (e) {
+      setErreurFacturation(e.message || "Impossible de générer les factures familles.");
+      setImpressionGroupeeEnCours(false);
+      return;
+    }
+    const factures = data.factures || [];
+    if (factures.length === 0) {
+      setErreurFacturation("Aucune famille facturable pour ce trimestre.");
+      setImpressionGroupeeEnCours(false);
+      return;
+    }
+
+    const corps = factures.map((d) => corpsFactureFamille(d)).join("\n");
+    const titre = `Factures familles — ${tri ? tri.label : trimestre} ${esc(data.annee_scolaire)}`;
+    const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>${titre}</title>
+<style>${stylesFacture}</style></head><body>
+<p class="noprint" style="text-align:center;margin:0 0 16px">
+  <button onclick="window.print()" style="padding:10px 18px;background:#22304A;color:#fff;border:none;border-radius:8px;font-weight:bold;cursor:pointer">Imprimer / Enregistrer en PDF (${factures.length} famille${factures.length > 1 ? "s" : ""})</button>
+</p>
+${corps}
+</body></html>`;
+
+    const fenetre = window.open("", "_blank");
+    if (fenetre) { fenetre.document.write(html); fenetre.document.close(); }
+    else setErreurFacturation("Autorisez les fenêtres surgissantes pour imprimer les factures.");
+    setImpressionGroupeeEnCours(false);
   };
 
   // Bordereau complet : toutes les familles du trimestre, une ligne par enfant,
@@ -2623,6 +2734,11 @@ ${sectionReports}
                   className="ml-auto flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
                   style={{ backgroundColor: C.ink, color: "#fff" }}>
                   <FileDown size={16} /> Imprimer le bordereau
+                </button>
+                <button onClick={imprimerToutesFacturesFamilles} disabled={impressionGroupeeEnCours}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border"
+                  style={{ borderColor: C.ink, color: C.ink, backgroundColor: "#fff", opacity: impressionGroupeeEnCours ? 0.6 : 1 }}>
+                  <FileDown size={16} /> {impressionGroupeeEnCours ? "Préparation…" : "Imprimer toutes les factures familles"}
                 </button>
               </div>
             </div>
