@@ -1274,7 +1274,7 @@ ${corps}
   const [passagesCourtsEnCours, setPassagesCourtsEnCours] = useState(false);
   const [selectionCourts, setSelectionCourts] = useState({}); // { pointage_id: true }
   const [ajustementEnCours, setAjustementEnCours] = useState(false);
-  const SEUIL_MIN_COURT = 5; // minutes
+  const [seuilMinCourt, setSeuilMinCourt] = useState(5); // durée max de dépassement, en minutes
 
   // Détecte le créneau "garde tardive" dans la liste des créneaux (par le nom).
   const creneauGardeTardive = () =>
@@ -1287,7 +1287,7 @@ ${corps}
     const ct = creneauGardeTardive();
     try {
       const d = await api.passagesCourts(
-        trimestre, anneeScolaireCourante(), SEUIL_MIN_COURT, ct ? ct.id : null
+        trimestre, anneeScolaireCourante(), seuilMinCourt, ct ? ct.id : null
       );
       setPassagesCourts(d);
     } catch (e) {
@@ -1326,7 +1326,10 @@ ${corps}
     setAjustementEnCours(true);
     setErreurFacturation("");
     try {
-      await api.ajusterDepassements(ids, heureCible, SEUIL_MIN_COURT);
+      // On utilise le seuil réellement appliqué à la recherche affichée
+      // (pas l'état du champ, que l'utilisateur a pu modifier depuis).
+      const seuilApplique = passagesCourts?.max_minutes || seuilMinCourt;
+      await api.ajusterDepassements(ids, heureCible, seuilApplique);
       // Recharger la liste et le récap de facturation pour refléter la correction.
       await chercherPassagesCourts();
       await chargerFacturation();
@@ -2844,15 +2847,24 @@ ${sectionReports}
                     <AlertTriangle size={17} style={{ color: C.yellow }} /> Passages courts à vérifier
                   </h2>
                   <p className="text-xs mt-1" style={{ color: C.grey }}>
-                    Repère les gardes tardives de <strong>{SEUIL_MIN_COURT} min ou moins</strong> : souvent une sortie
+                    Repère les gardes tardives de <strong>{seuilMinCourt} min ou moins</strong> : souvent une sortie
                     pointée avec un peu de retard, qui fait facturer la garde tardive à tort. À corriger au cas par cas.
                   </p>
                 </div>
-                <button onClick={chercherPassagesCourts} disabled={passagesCourtsEnCours}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border"
-                  style={{ borderColor: C.ink, color: C.ink, backgroundColor: "#fff", opacity: passagesCourtsEnCours ? 0.6 : 1 }}>
-                  <Search size={16} /> {passagesCourtsEnCours ? "Recherche…" : "Rechercher"}
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="flex items-center gap-1 text-sm" style={{ color: C.grey }}>
+                    Dépassement ≤
+                    <input type="number" min="1" max="60" value={seuilMinCourt}
+                      onChange={(e) => setSeuilMinCourt(Math.max(1, Math.min(60, parseInt(e.target.value, 10) || 1)))}
+                      className="w-16 rounded-lg border px-2 py-1 text-center" style={{ borderColor: C.line }} />
+                    min
+                  </label>
+                  <button onClick={chercherPassagesCourts} disabled={passagesCourtsEnCours}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border"
+                    style={{ borderColor: C.ink, color: C.ink, backgroundColor: "#fff", opacity: passagesCourtsEnCours ? 0.6 : 1 }}>
+                    <Search size={16} /> {passagesCourtsEnCours ? "Recherche…" : "Rechercher"}
+                  </button>
+                </div>
               </div>
 
               {passagesCourts && (
