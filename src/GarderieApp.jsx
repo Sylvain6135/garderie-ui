@@ -165,6 +165,13 @@ const api = {
     const q = `trimestre=${trimestre}&annee=${encodeURIComponent(annee)}&max_minutes=${maxMinutes}` + (creneauId ? `&creneau_id=${creneauId}` : "");
     return apiFetch(`/facturation/passages-courts?${q}`);
   },
+  // Ajuster les débordements : ramène le départ à l'heure cible pour les pointages donnés
+  async ajusterDepassements(pointageIds, heureCible, maxMinutes) {
+    return apiFetch("/corrections/ajuster-depassements", {
+      method: "POST",
+      body: JSON.stringify({ pointage_ids: pointageIds, heure_cible: heureCible, max_minutes: maxMinutes }),
+    });
+  },
   // Report de facturation (seuil 15 €)
   async recapAvecReport(trimestre, annee) {
     return apiFetch(`/facturation/avec-report?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
@@ -1265,6 +1272,8 @@ ${corps}
   // --- Passages courts à vérifier (débordements de saisie, ex. garde tardive) ---
   const [passagesCourts, setPassagesCourts] = useState(null); // null = pas encore cherché
   const [passagesCourtsEnCours, setPassagesCourtsEnCours] = useState(false);
+  const [selectionCourts, setSelectionCourts] = useState({}); // { pointage_id: true }
+  const [ajustementEnCours, setAjustementEnCours] = useState(false);
   const SEUIL_MIN_COURT = 5; // minutes
 
   // Détecte le créneau "garde tardive" dans la liste des créneaux (par le nom).
@@ -1274,6 +1283,7 @@ ${corps}
   const chercherPassagesCourts = async () => {
     setPassagesCourtsEnCours(true);
     setErreurFacturation("");
+    setSelectionCourts({});
     const ct = creneauGardeTardive();
     try {
       const d = await api.passagesCourts(
@@ -1285,6 +1295,45 @@ ${corps}
       setPassagesCourts(null);
     }
     setPassagesCourtsEnCours(false);
+  };
+
+  // Liste des pointage_id cochés (dédupliqués).
+  const pointagesSelectionnes = () => {
+    if (!passagesCourts) return [];
+    const ids = passagesCourts.passages
+      .filter((p) => selectionCourts[p.pointage_id])
+      .map((p) => p.pointage_id);
+    return [...new Set(ids)];
+  };
+
+  // Ajuste les dépassements cochés : ramène le départ au début de la garde
+  // tardive (donc supprime le passage en trop), après confirmation.
+  const ajusterDepassementsSelection = async () => {
+    const ct = creneauGardeTardive();
+    const heureCible = ct ? ct.debut : "17:35"; // début du créneau garde tardive
+    const ids = pointagesSelectionnes();
+    if (ids.length === 0) {
+      setErreurFacturation("Cochez au moins un passage à ajuster.");
+      return;
+    }
+    const ok = window.confirm(
+      `Ajuster ${ids.length} pointage${ids.length > 1 ? "s" : ""} ?\n\n` +
+      `L'heure de sortie sera ramenée à ${heureCible.replace(":", "h")} et la garde tardive ` +
+      `facturée à tort sera retirée. Cette action modifie les pointages concernés.`
+    );
+    if (!ok) return;
+
+    setAjustementEnCours(true);
+    setErreurFacturation("");
+    try {
+      await api.ajusterDepassements(ids, heureCible, SEUIL_MIN_COURT);
+      // Recharger la liste et le récap de facturation pour refléter la correction.
+      await chercherPassagesCourts();
+      await chargerFacturation();
+    } catch (e) {
+      setErreurFacturation(e.message || "Impossible d'ajuster les dépassements.");
+    }
+    setAjustementEnCours(false);
   };
 
   // Bordereau complet : toutes les familles du trimestre, une ligne par enfant,
@@ -2819,14 +2868,30 @@ ${sectionReports}
                     </p>
                   ) : (
                     <>
-                      <p className="text-sm mb-2" style={{ color: C.ink }}>
-                        <strong>{passagesCourts.nb}</strong> passage{passagesCourts.nb > 1 ? "s" : ""} court{passagesCourts.nb > 1 ? "s" : ""} trouvé{passagesCourts.nb > 1 ? "s" : ""}
-                        {" "}(total {passagesCourts.total_eur.toFixed(2).replace(".", ",")} €).
-                      </p>
+                      <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                        <p className="text-sm" style={{ color: C.ink }}>
+                          <strong>{passagesCourts.nb}</strong> passage{passagesCourts.nb > 1 ? "s" : ""} court{passagesCourts.nb > 1 ? "s" : ""} trouvé{passagesCourts.nb > 1 ? "s" : ""}
+                          {" "}(total {passagesCourts.total_eur.toFixed(2).replace(".", ",")} €).
+                        </p>
+                        <button onClick={ajusterDepassementsSelection} disabled={ajustementEnCours || pointagesSelectionnes().length === 0}
+                          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+                          style={{ backgroundColor: C.green, color: "#fff", opacity: (ajustementEnCours || pointagesSelectionnes().length === 0) ? 0.5 : 1 }}>
+                          <Check size={16} /> {ajustementEnCours ? "Ajustement…" : `Ajuster les dépassements (${pointagesSelectionnes().length})`}
+                        </button>
+                      </div>
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                           <thead>
                             <tr style={{ color: C.grey }} className="text-left text-xs">
+                              <th className="p-2">
+                                <input type="checkbox"
+                                  checked={passagesCourts.passages.length > 0 && passagesCourts.passages.every((p) => selectionCourts[p.pointage_id])}
+                                  onChange={(e) => {
+                                    const tout = {};
+                                    if (e.target.checked) passagesCourts.passages.forEach((p) => { tout[p.pointage_id] = true; });
+                                    setSelectionCourts(tout);
+                                  }} />
+                              </th>
                               <th className="p-2">Date</th>
                               <th className="p-2">Enfant</th>
                               <th className="p-2">Famille</th>
@@ -2839,6 +2904,11 @@ ${sectionReports}
                           <tbody>
                             {passagesCourts.passages.map((p) => (
                               <tr key={p.passage_id} style={{ borderTop: `1px solid ${C.line}` }}>
+                                <td className="p-2">
+                                  <input type="checkbox"
+                                    checked={!!selectionCourts[p.pointage_id]}
+                                    onChange={(e) => setSelectionCourts((s) => ({ ...s, [p.pointage_id]: e.target.checked }))} />
+                                </td>
                                 <td className="p-2 whitespace-nowrap">{new Date(p.jour).toLocaleDateString("fr-FR")}</td>
                                 <td className="p-2">{p.enfant}{p.classe ? ` (${p.classe})` : ""}</td>
                                 <td className="p-2">{p.parent}</td>
@@ -2852,8 +2922,9 @@ ${sectionReports}
                         </table>
                       </div>
                       <p className="text-xs mt-2" style={{ color: C.grey }}>
-                        Pour corriger un cas : allez dans <strong>Historique</strong>, retrouvez le pointage du jour
-                        concerné et ajustez l'heure de sortie (ou supprimez le passage en trop).
+                        Cochez les dépassements à corriger puis « Ajuster les dépassements » : l'heure de sortie
+                        est ramenée au début de la garde tardive et le passage facturé à tort est retiré.
+                        Vous pouvez aussi corriger un cas manuellement depuis l'<strong>Historique</strong>.
                       </p>
                     </>
                   )}
