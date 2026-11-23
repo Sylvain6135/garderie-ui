@@ -977,7 +977,10 @@ export default function GarderieApp() {
       parPointage[cle].push(p);
     }
     return ordre.map((cle) => {
-      const lignes = parPointage[cle];
+      // On ne garde que les créneaux facturés (> 0 €) ; un jour sans aucun
+      // créneau facturé n'apparaît pas.
+      const lignes = parPointage[cle].filter((p) => Number(p.cout_eur) > 0);
+      if (lignes.length === 0) return "";
       const prem = lignes[0];
       // Ligne d'en-tête : jour + présence réelle.
       const presence = (prem.arrivee_reelle && prem.depart_reel)
@@ -1000,9 +1003,11 @@ export default function GarderieApp() {
   // compacte des dates concernées. Évite les factures de plusieurs pages.
   const lignesPassagesParCreneau = (passages, esc, fmtJourCourt) => {
     // Regrouper par créneau (nom + horaires, qui sont constants par créneau).
+    // On ignore les passages à 0 € (ex. « Fin de l'enseignement »).
     const parCreneau = {};
     const ordre = [];
     for (const p of passages) {
+      if (Number(p.cout_eur) <= 0) continue;
       const horaires = (p.heure_debut && p.heure_fin)
         ? `${p.heure_debut.replace(":", "h")}–${p.heure_fin.replace(":", "h")}`
         : "";
@@ -1127,8 +1132,9 @@ tr.total td{font-weight:bold;background:#FBF3DC;font-size:13px}
 
   // Construit le CORPS HTML d'une facture famille (sans squelette <html>),
   // réutilisable pour l'impression individuelle et l'impression groupée.
-  // `avecBoutonRien` : pas de bouton ici, c'est le conteneur qui le pose.
-  const corpsFactureFamille = (d) => {
+  // `mode` : "condense" (par défaut, 1 ligne par créneau) ou "detaille"
+  // (jour par jour). Dans les deux cas, les créneaux à 0 € sont masqués.
+  const corpsFactureFamille = (d, mode = "condense") => {
     const cf = coordFacturation;
     const esc = (t) => (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const nl2br = (t) => esc(t).replace(/\n/g, "<br>");
@@ -1137,6 +1143,7 @@ tr.total td{font-weight:bold;background:#FBF3DC;font-size:13px}
     const tri = TRIMESTRES.find((t) => t.id === trimestre);
     const total = Number(d.total_eur).toFixed(2).replace(".", ",");
     const periode = `${tri.label} (${periodeTrimestre(tri.id, datesTrimestres)}) — ${d.annee_scolaire}`;
+    const fmtJour = (j) => new Date(j).toLocaleDateString("fr-FR");
     const fmtJourCourt = (j) => {
       const dt = new Date(j);
       return `${String(dt.getDate()).padStart(2, "0")}/${String(dt.getMonth() + 1).padStart(2, "0")}`;
@@ -1160,8 +1167,9 @@ tr.total td{font-weight:bold;background:#FBF3DC;font-size:13px}
       if (enf.formule === "forfait") {
         detail = `<tr class="creneau-resume"><td>Forfait trimestriel — accès illimité</td><td>${Number(enf.montant_eur).toFixed(2).replace(".", ",")} €</td></tr>`;
       } else if (enf.passages && enf.passages.length > 0) {
-        // Détail CONDENSÉ : une ligne par créneau + dates.
-        detail = lignesPassagesParCreneau(enf.passages, esc, fmtJourCourt);
+        detail = mode === "detaille"
+          ? lignesPassagesParJour(enf.passages, esc, fmtJour)   // jour par jour
+          : lignesPassagesParCreneau(enf.passages, esc, fmtJourCourt); // condensé
       }
       return `<tr class="enfant"><td colspan="2"><strong>${esc(enf.enfant)}</strong>${enf.classe ? ` (${esc(enf.classe)})` : ""} — ${enf.formule === "forfait" ? "Forfait" : "À la carte"} · sous-total ${Number(enf.montant_eur).toFixed(2).replace(".", ",")} €</td></tr>${detail}`;
     }).join("");
@@ -1185,7 +1193,8 @@ ${cf.mentions ? `<p class="mentions">${nl2br(cf.mentions)}</p>` : ""}
 </div>`;
   };
 
-  const exporterFactureFamille = async (familleId) => {
+  // mode : "condense" (défaut) ou "detaille" (jour par jour, à la demande).
+  const exporterFactureFamille = async (familleId, mode = "condense") => {
     const esc = (t) => (t || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     let d;
     try {
@@ -1197,7 +1206,7 @@ ${cf.mentions ? `<p class="mentions">${nl2br(cf.mentions)}</p>` : ""}
 
     const html = `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Facture — ${esc(d.famille.nom_referent)}</title>
 <style>${stylesFacture}</style></head><body>
-${corpsFactureFamille(d)}
+${corpsFactureFamille(d, mode)}
 <p class="noprint"><button onclick="window.print()" style="padding:10px 18px;background:#22304A;color:#fff;border:none;border-radius:8px;font-weight:bold;cursor:pointer">Imprimer / Enregistrer en PDF</button></p>
 </body></html>`;
 
@@ -1205,6 +1214,9 @@ ${corpsFactureFamille(d)}
     if (fenetre) { fenetre.document.write(html); fenetre.document.close(); }
     else setErreurFacturation("Autorisez les fenêtres surgissantes pour imprimer la facture.");
   };
+
+  // Choix du format (condensé / détaillé) au moment d'imprimer une facture famille.
+  const [familleAImprimer, setFamilleAImprimer] = useState(null); // { id, nom }
 
   // Impression GROUPÉE : toutes les factures familles facturables du trimestre,
   // une par page, dans un seul document prêt à imprimer d'un trait.
@@ -2948,7 +2960,7 @@ ${sectionReports}
                             <FileDown size={15} />
                           </button>
                           {l.famille_id && (
-                            <button title="Facture groupée de la famille" onClick={() => exporterFactureFamille(l.famille_id)}
+                            <button title="Facture groupée de la famille" onClick={() => setFamilleAImprimer({ id: l.famille_id, nom: l.parent })}
                               className="flex items-center gap-1 p-2 rounded-lg text-xs font-semibold"
                               style={{ color: C.green, backgroundColor: C.green + "15" }}>
                               <Users size={15} />
@@ -3807,6 +3819,48 @@ ${sectionReports}
                 Supprimer
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Choix du format d'impression d'une facture famille (condensé / détaillé) */}
+      {familleAImprimer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
+          onClick={() => setFamilleAImprimer(null)}>
+          <div className="rounded-2xl p-5 max-w-sm w-full" style={{ backgroundColor: C.card }}
+            onClick={(e) => e.stopPropagation()}>
+            <h3 className="font-bold mb-1">Facture — {familleAImprimer.nom}</h3>
+            <p className="text-sm mb-4" style={{ color: C.grey }}>
+              Choisissez le format d'impression de la facture de cette famille.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { const f = familleAImprimer; setFamilleAImprimer(null); exporterFactureFamille(f.id, "condense"); }}
+                className="flex items-start gap-3 p-3 rounded-xl text-left border"
+                style={{ borderColor: C.line, backgroundColor: C.green + "10" }}>
+                <FileDown size={18} style={{ color: C.green, marginTop: 2 }} />
+                <span>
+                  <span className="block font-semibold text-sm" style={{ color: C.ink }}>Condensé (recommandé)</span>
+                  <span className="block text-xs" style={{ color: C.grey }}>Un récapitulatif par créneau. Tient sur ~1 page.</span>
+                </span>
+              </button>
+              <button
+                onClick={() => { const f = familleAImprimer; setFamilleAImprimer(null); exporterFactureFamille(f.id, "detaille"); }}
+                className="flex items-start gap-3 p-3 rounded-xl text-left border"
+                style={{ borderColor: C.line, backgroundColor: C.paper }}>
+                <FileDown size={18} style={{ color: C.ink, marginTop: 2 }} />
+                <span>
+                  <span className="block font-semibold text-sm" style={{ color: C.ink }}>Détaillé (jour par jour)</span>
+                  <span className="block text-xs" style={{ color: C.grey }}>Le détail complet des passages. Pour une famille qui le demande.</span>
+                </span>
+              </button>
+            </div>
+            <button onClick={() => setFamilleAImprimer(null)}
+              className="mt-3 w-full py-2 rounded-xl text-sm font-semibold"
+              style={{ color: C.grey, backgroundColor: C.paper }}>
+              Annuler
+            </button>
           </div>
         </div>
       )}
