@@ -83,7 +83,10 @@ async function apiFetch(chemin, options = {}) {
       _jeton = null;
       effacerSessionMemorisee();
     }
-    throw new Error(message);
+    const err = new Error(message);
+    err.statut = reponse.status;
+    err.donnees = donnees; // corps complet (ex. { avertissement, pointage_existant })
+    throw err;
   }
   return donnees;
 }
@@ -291,12 +294,13 @@ const api = {
     const d = await apiFetch(`/corrections?debut=${debut}&fin=${fin}`);
     return d.pointages || [];
   },
-  async ajouterPointageManuel(enfantId, jour, heureArrivee, heureDepart) {
+  async ajouterPointageManuel(enfantId, jour, heureArrivee, heureDepart, force = false) {
     return apiFetch(`/corrections`, {
       method: "POST",
       body: JSON.stringify({
         enfant_id: enfantId, jour,
         heure_arrivee: heureArrivee, heure_depart: heureDepart,
+        force,
       }),
     });
   },
@@ -1874,18 +1878,30 @@ ${sectionReports}
     if (!ajoutJour) { setCorrMessage("Veuillez indiquer la date."); return; }
     if (!ajoutArrivee || !ajoutDepart) { setCorrMessage("Les heures d'arrivée et de départ sont obligatoires."); return; }
     if (ajoutDepart < ajoutArrivee) { setCorrMessage("Le départ ne peut pas précéder l'arrivée."); return; }
-    try {
-      const r = await api.ajouterPointageManuel(Number(ajoutEnfant), ajoutJour, ajoutArrivee, ajoutDepart);
+    const enregistrer = async (force) => {
+      const r = await api.ajouterPointageManuel(Number(ajoutEnfant), ajoutJour, ajoutArrivee, ajoutDepart, force);
       setCorrMessage(`Pointage ajouté (${r.passages_recalcules} créneau${r.passages_recalcules > 1 ? "x" : ""} facturé${r.passages_recalcules > 1 ? "s" : ""}).`);
-      // Réinitialiser le formulaire et rafraîchir la liste.
       setAjoutOuvert(false);
       setAjoutEnfant("");
       setAjoutArrivee("");
       setAjoutDepart("");
-      // Si la période affichée couvre le jour ajouté, on recharge.
       if (ajoutJour >= corrDebut && ajoutJour <= corrFin) await chargerCorrections();
       setTimeout(() => setCorrMessage(""), 3000);
+    };
+    try {
+      await enregistrer(false);
     } catch (e) {
+      // Avertissement de chevauchement : on demande confirmation, puis on force.
+      if (e.statut === 409 && e.donnees?.avertissement === "chevauchement") {
+        const ok = window.confirm(`${e.donnees.erreur}\n\nVoulez-vous quand même enregistrer ce pointage ?`);
+        if (!ok) { setCorrMessage(""); return; }
+        try {
+          await enregistrer(true);
+        } catch (e2) {
+          setCorrMessage(e2.message || "Ajout impossible.");
+        }
+        return;
+      }
       setCorrMessage(e.message || "Ajout impossible.");
     }
   };
