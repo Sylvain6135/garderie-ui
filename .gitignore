@@ -6,6 +6,7 @@
 # Dépendances / build (régénérés)
 node_modules/
 dist/
+package-lock.json
 
 # Divers
 .DS_Store
