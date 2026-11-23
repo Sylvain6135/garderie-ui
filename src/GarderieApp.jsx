@@ -172,6 +172,17 @@ const api = {
       body: JSON.stringify({ pointage_ids: pointageIds, heure_cible: heureCible, max_minutes: maxMinutes }),
     });
   },
+  // Détecter les doubles pointages (présences coupées) à fusionner
+  async detecterDoublons(trimestre, annee, ecartMax) {
+    return apiFetch(`/corrections/doublons?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}&ecart_max=${ecartMax}`);
+  },
+  // Fusionner des groupes de pointages consécutifs
+  async fusionnerPointages(groupes) {
+    return apiFetch("/corrections/fusionner", {
+      method: "POST",
+      body: JSON.stringify({ groupes }),
+    });
+  },
   // Report de facturation (seuil 15 €)
   async recapAvecReport(trimestre, annee) {
     return apiFetch(`/facturation/avec-report?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
@@ -1337,6 +1348,62 @@ ${corps}
       setErreurFacturation(e.message || "Impossible d'ajuster les dépassements.");
     }
     setAjustementEnCours(false);
+  };
+
+  // --- Doubles pointages à fusionner (présences coupées par un dépointage) ---
+  const [doublons, setDoublons] = useState(null); // null = pas encore cherché
+  const [doublonsEnCours, setDoublonsEnCours] = useState(false);
+  const [selectionDoublons, setSelectionDoublons] = useState({}); // { "jour|enfant_id": true }
+  const [fusionEnCours, setFusionEnCours] = useState(false);
+  const [ecartDoublons, setEcartDoublons] = useState(15); // écart max en minutes
+
+  const cleGroupe = (g) => `${g.jour}|${g.enfant_id}`;
+
+  const chercherDoublons = async () => {
+    setDoublonsEnCours(true);
+    setErreurFacturation("");
+    setSelectionDoublons({});
+    try {
+      const d = await api.detecterDoublons(trimestre, anneeScolaireCourante(), ecartDoublons);
+      setDoublons(d);
+    } catch (e) {
+      setErreurFacturation(e.message || "Impossible de rechercher les doubles pointages.");
+      setDoublons(null);
+    }
+    setDoublonsEnCours(false);
+  };
+
+  const groupesSelectionnes = () => {
+    if (!doublons) return [];
+    return doublons.groupes
+      .filter((g) => selectionDoublons[cleGroupe(g)])
+      .map((g) => g.pointage_ids);
+  };
+
+  const fusionnerSelection = async () => {
+    const groupes = groupesSelectionnes();
+    if (groupes.length === 0) {
+      setErreurFacturation("Cochez au moins un cas à fusionner.");
+      return;
+    }
+    const ok = window.confirm(
+      `Fusionner ${groupes.length} cas ?\n\n` +
+      `Pour chacun, les pointages d'une même présence seront réunis en un seul ` +
+      `(toute la durée de présence est conservée, le créneau n'est facturé qu'une fois). ` +
+      `Cette action modifie les pointages concernés.`
+    );
+    if (!ok) return;
+
+    setFusionEnCours(true);
+    setErreurFacturation("");
+    try {
+      await api.fusionnerPointages(groupes);
+      await chercherDoublons();
+      await chargerFacturation();
+    } catch (e) {
+      setErreurFacturation(e.message || "Impossible de fusionner les pointages.");
+    }
+    setFusionEnCours(false);
   };
 
   // Bordereau complet : toutes les familles du trimestre, une ligne par enfant,
@@ -2939,6 +3006,105 @@ ${sectionReports}
                         Cochez les dépassements à corriger puis « Ajuster les dépassements » : l'heure de sortie
                         est ramenée au début de la garde tardive et le passage facturé à tort est retiré.
                         Vous pouvez aussi corriger un cas manuellement depuis l'<strong>Historique</strong>.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Doubles pointages à fusionner (présences coupées par un dépointage) */}
+            <div className="rounded-2xl border p-4" style={{ backgroundColor: C.card, borderColor: C.line }}>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="font-bold flex items-center gap-2">
+                    <ClipboardCheck size={17} style={{ color: C.yellow }} /> Doubles pointages à fusionner
+                  </h2>
+                  <p className="text-xs mt-1" style={{ color: C.grey }}>
+                    Repère les enfants pointés <strong>deux fois le même jour</strong> sur une même présence
+                    (dépointage par erreur), ce qui facture un créneau en double. La fusion réunit les pointages
+                    en une seule présence — toute la durée est conservée, le créneau n'est compté qu'une fois.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="flex items-center gap-1 text-sm" style={{ color: C.grey }}>
+                    Écart ≤
+                    <input type="number" min="1" max="120" value={ecartDoublons}
+                      onChange={(e) => setEcartDoublons(Math.max(1, Math.min(120, parseInt(e.target.value, 10) || 1)))}
+                      className="w-16 rounded-lg border px-2 py-1 text-center" style={{ borderColor: C.line }} />
+                    min
+                  </label>
+                  <button onClick={chercherDoublons} disabled={doublonsEnCours}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border"
+                    style={{ borderColor: C.ink, color: C.ink, backgroundColor: "#fff", opacity: doublonsEnCours ? 0.6 : 1 }}>
+                    <Search size={16} /> {doublonsEnCours ? "Recherche…" : "Rechercher"}
+                  </button>
+                </div>
+              </div>
+
+              {doublons && (
+                <div className="mt-3">
+                  {doublons.groupes.length === 0 ? (
+                    <p className="text-sm font-semibold" style={{ color: C.green }}>
+                      Aucun double pointage à fusionner pour ce trimestre. 👍
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                        <p className="text-sm" style={{ color: C.ink }}>
+                          <strong>{doublons.nb}</strong> cas à vérifier.
+                        </p>
+                        <button onClick={fusionnerSelection} disabled={fusionEnCours || groupesSelectionnes().length === 0}
+                          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+                          style={{ backgroundColor: C.green, color: "#fff", opacity: (fusionEnCours || groupesSelectionnes().length === 0) ? 0.5 : 1 }}>
+                          <Check size={16} /> {fusionEnCours ? "Fusion…" : `Fusionner la sélection (${groupesSelectionnes().length})`}
+                        </button>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr style={{ color: C.grey }} className="text-left text-xs">
+                              <th className="p-2">
+                                <input type="checkbox"
+                                  checked={doublons.groupes.length > 0 && doublons.groupes.every((g) => selectionDoublons[cleGroupe(g)])}
+                                  onChange={(e) => {
+                                    const tout = {};
+                                    if (e.target.checked) doublons.groupes.forEach((g) => { tout[cleGroupe(g)] = true; });
+                                    setSelectionDoublons(tout);
+                                  }} />
+                              </th>
+                              <th className="p-2">Date</th>
+                              <th className="p-2">Enfant</th>
+                              <th className="p-2">Famille</th>
+                              <th className="p-2">Pointages détectés</th>
+                              <th className="p-2">Après fusion</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {doublons.groupes.map((g) => (
+                              <tr key={cleGroupe(g)} style={{ borderTop: `1px solid ${C.line}` }}>
+                                <td className="p-2">
+                                  <input type="checkbox"
+                                    checked={!!selectionDoublons[cleGroupe(g)]}
+                                    onChange={(e) => setSelectionDoublons((s) => ({ ...s, [cleGroupe(g)]: e.target.checked }))} />
+                                </td>
+                                <td className="p-2 whitespace-nowrap">{new Date(g.jour).toLocaleDateString("fr-FR")}</td>
+                                <td className="p-2">{g.enfant}</td>
+                                <td className="p-2">{g.parent}</td>
+                                <td className="p-2" style={{ color: C.grey }}>
+                                  {g.segments.map((s) => `${s.arrivee.replace(":", "h")}→${s.depart.replace(":", "h")}`).join("  +  ")}
+                                </td>
+                                <td className="p-2 whitespace-nowrap font-semibold" style={{ color: C.green }}>
+                                  {g.arrivee.replace(":", "h")} → {g.depart.replace(":", "h")}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-xs mt-2" style={{ color: C.grey }}>
+                        Cochez les cas à corriger puis « Fusionner la sélection ». En cas de doute (vraie
+                        sortie puis retour plus tard), ne cochez pas la ligne et vérifiez dans l'<strong>Historique</strong>.
                       </p>
                     </>
                   )}
