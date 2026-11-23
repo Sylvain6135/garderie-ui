@@ -160,6 +160,11 @@ const api = {
   async facturesFamillesFacturables(trimestre, annee) {
     return apiFetch(`/facturation/factures-familles?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
   },
+  // Passages courts à vérifier (débordements de saisie) sur un créneau
+  async passagesCourts(trimestre, annee, maxMinutes, creneauId) {
+    const q = `trimestre=${trimestre}&annee=${encodeURIComponent(annee)}&max_minutes=${maxMinutes}` + (creneauId ? `&creneau_id=${creneauId}` : "");
+    return apiFetch(`/facturation/passages-courts?${q}`);
+  },
   // Report de facturation (seuil 15 €)
   async recapAvecReport(trimestre, annee) {
     return apiFetch(`/facturation/avec-report?trimestre=${trimestre}&annee=${encodeURIComponent(annee)}`);
@@ -1255,6 +1260,31 @@ ${corps}
     if (fenetre) { fenetre.document.write(html); fenetre.document.close(); }
     else setErreurFacturation("Autorisez les fenêtres surgissantes pour imprimer les factures.");
     setImpressionGroupeeEnCours(false);
+  };
+
+  // --- Passages courts à vérifier (débordements de saisie, ex. garde tardive) ---
+  const [passagesCourts, setPassagesCourts] = useState(null); // null = pas encore cherché
+  const [passagesCourtsEnCours, setPassagesCourtsEnCours] = useState(false);
+  const SEUIL_MIN_COURT = 5; // minutes
+
+  // Détecte le créneau "garde tardive" dans la liste des créneaux (par le nom).
+  const creneauGardeTardive = () =>
+    creneaux.find((c) => /tardiv/i.test(c.nom || "")) || null;
+
+  const chercherPassagesCourts = async () => {
+    setPassagesCourtsEnCours(true);
+    setErreurFacturation("");
+    const ct = creneauGardeTardive();
+    try {
+      const d = await api.passagesCourts(
+        trimestre, anneeScolaireCourante(), SEUIL_MIN_COURT, ct ? ct.id : null
+      );
+      setPassagesCourts(d);
+    } catch (e) {
+      setErreurFacturation(e.message || "Impossible de rechercher les passages courts.");
+      setPassagesCourts(null);
+    }
+    setPassagesCourtsEnCours(false);
   };
 
   // Bordereau complet : toutes les familles du trimestre, une ligne par enfant,
@@ -2755,6 +2785,80 @@ ${sectionReports}
                   <FileDown size={16} /> {impressionGroupeeEnCours ? "Préparation…" : "Imprimer toutes les factures familles"}
                 </button>
               </div>
+            </div>
+
+            {/* Passages courts à vérifier (débordements de saisie — garde tardive) */}
+            <div className="rounded-2xl border p-4" style={{ backgroundColor: C.card, borderColor: C.line }}>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="font-bold flex items-center gap-2">
+                    <AlertTriangle size={17} style={{ color: C.yellow }} /> Passages courts à vérifier
+                  </h2>
+                  <p className="text-xs mt-1" style={{ color: C.grey }}>
+                    Repère les gardes tardives de <strong>{SEUIL_MIN_COURT} min ou moins</strong> : souvent une sortie
+                    pointée avec un peu de retard, qui fait facturer la garde tardive à tort. À corriger au cas par cas.
+                  </p>
+                </div>
+                <button onClick={chercherPassagesCourts} disabled={passagesCourtsEnCours}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border"
+                  style={{ borderColor: C.ink, color: C.ink, backgroundColor: "#fff", opacity: passagesCourtsEnCours ? 0.6 : 1 }}>
+                  <Search size={16} /> {passagesCourtsEnCours ? "Recherche…" : "Rechercher"}
+                </button>
+              </div>
+
+              {passagesCourts && (
+                <div className="mt-3">
+                  {!creneauGardeTardive() && (
+                    <p className="text-xs mb-2" style={{ color: "#A87E12" }}>
+                      Aucun créneau « garde tardive » trouvé : la recherche porte sur tous les créneaux.
+                    </p>
+                  )}
+                  {passagesCourts.passages.length === 0 ? (
+                    <p className="text-sm font-semibold" style={{ color: C.green }}>
+                      Aucun passage court à signaler pour ce trimestre. 👍
+                    </p>
+                  ) : (
+                    <>
+                      <p className="text-sm mb-2" style={{ color: C.ink }}>
+                        <strong>{passagesCourts.nb}</strong> passage{passagesCourts.nb > 1 ? "s" : ""} court{passagesCourts.nb > 1 ? "s" : ""} trouvé{passagesCourts.nb > 1 ? "s" : ""}
+                        {" "}(total {passagesCourts.total_eur.toFixed(2).replace(".", ",")} €).
+                      </p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr style={{ color: C.grey }} className="text-left text-xs">
+                              <th className="p-2">Date</th>
+                              <th className="p-2">Enfant</th>
+                              <th className="p-2">Famille</th>
+                              <th className="p-2">Créneau</th>
+                              <th className="p-2">Sortie pointée</th>
+                              <th className="p-2 text-right">Durée</th>
+                              <th className="p-2 text-right">Montant</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {passagesCourts.passages.map((p) => (
+                              <tr key={p.passage_id} style={{ borderTop: `1px solid ${C.line}` }}>
+                                <td className="p-2 whitespace-nowrap">{new Date(p.jour).toLocaleDateString("fr-FR")}</td>
+                                <td className="p-2">{p.enfant}{p.classe ? ` (${p.classe})` : ""}</td>
+                                <td className="p-2">{p.parent}</td>
+                                <td className="p-2">{p.creneau}{p.heure_debut ? ` (${p.heure_debut.replace(":", "h")})` : ""}</td>
+                                <td className="p-2 whitespace-nowrap">{p.heure_depart ? p.heure_depart.replace(":", "h") : "—"}</td>
+                                <td className="p-2 text-right whitespace-nowrap">{p.minutes} min</td>
+                                <td className="p-2 text-right whitespace-nowrap">{p.cout_eur.toFixed(2).replace(".", ",")} €</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-xs mt-2" style={{ color: C.grey }}>
+                        Pour corriger un cas : allez dans <strong>Historique</strong>, retrouvez le pointage du jour
+                        concerné et ajustez l'heure de sortie (ou supprimez le passage en trop).
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Report de facturation (seuil 15 €) */}
