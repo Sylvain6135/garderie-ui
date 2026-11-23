@@ -2908,7 +2908,7 @@ ${sectionReports}
                               <th className="p-2">Enfant</th>
                               <th className="p-2">Famille</th>
                               <th className="p-2">Créneau</th>
-                              <th className="p-2">Sortie pointée</th>
+                              <th className="p-2">Présence pointée</th>
                               <th className="p-2 text-right">Durée</th>
                               <th className="p-2 text-right">Montant</th>
                             </tr>
@@ -2925,7 +2925,9 @@ ${sectionReports}
                                 <td className="p-2">{p.enfant}{p.classe ? ` (${p.classe})` : ""}</td>
                                 <td className="p-2">{p.parent}</td>
                                 <td className="p-2">{p.creneau}{p.heure_debut ? ` (${p.heure_debut.replace(":", "h")})` : ""}</td>
-                                <td className="p-2 whitespace-nowrap">{p.heure_depart ? p.heure_depart.replace(":", "h") : "—"}</td>
+                                <td className="p-2 whitespace-nowrap">
+                                  {p.heure_arrivee ? p.heure_arrivee.replace(":", "h") : "?"} → {p.heure_depart ? p.heure_depart.replace(":", "h") : "—"}
+                                </td>
                                 <td className="p-2 text-right whitespace-nowrap">{p.minutes} min</td>
                                 <td className="p-2 text-right whitespace-nowrap">{p.cout_eur.toFixed(2).replace(".", ",")} €</td>
                               </tr>
