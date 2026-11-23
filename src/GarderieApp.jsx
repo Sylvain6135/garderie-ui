@@ -1008,7 +1008,7 @@ export default function GarderieApp() {
         : "";
       const cle = `${p.creneau}|${horaires}`;
       if (!parCreneau[cle]) {
-        parCreneau[cle] = { nom: p.creneau, horaires, nb: 0, total: 0, jours: [] };
+        parCreneau[cle] = { nom: p.creneau, horaires, debut: p.heure_debut || "", nb: 0, total: 0, jours: [] };
         ordre.push(cle);
       }
       const g = parCreneau[cle];
@@ -1016,6 +1016,8 @@ export default function GarderieApp() {
       g.total += Number(p.cout_eur);
       if (p.jour) g.jours.push(p.jour);
     }
+    // Trier les créneaux dans l'ordre chronologique de la journée (heure de début).
+    ordre.sort((a, b) => (parCreneau[a].debut || "").localeCompare(parCreneau[b].debut || ""));
     return ordre.map((cle) => {
       const g = parCreneau[cle];
       const total = g.total.toFixed(2).replace(".", ",");
